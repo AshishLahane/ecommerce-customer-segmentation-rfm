@@ -1,0 +1,57 @@
+-- 1. Data Cleaning View (Filter out invalid transactions and cancellations)
+CREATE OR REPLACE VIEW cleaned_retail_sales AS
+SELECT 
+    InvoiceNo,
+    StockCode,
+    Description,
+    Quantity,
+    InvoiceDate,
+    UnitPrice,
+    (Quantity * UnitPrice) AS TotalRevenue,
+    CustomerID,
+    Country
+FROM raw_online_retail
+WHERE CustomerID IS NOT NULL
+  AND Quantity > 0
+  AND UnitPrice > 0;
+
+-- 2. RFM Calculation (Recency, Frequency, Monetary)
+WITH base_metrics AS (
+    SELECT 
+        CustomerID,
+        MAX(InvoiceDate) AS LastPurchaseDate,
+        COUNT(DISTINCT InvoiceNo) AS Frequency,
+        ROUND(SUM(TotalRevenue), 2) AS Monetary
+    FROM cleaned_retail_sales
+    GROUP BY CustomerID
+),
+rfm_scores AS (
+    SELECT 
+        CustomerID,
+        -- Recency: Days between overall max date and customer last purchase
+        DATE_PART('day', '2011-12-10'::date - LastPurchaseDate) AS RecencyDays,
+        Frequency,
+        Monetary,
+        -- Score from 1 to 4 using NTILE (percentiles)
+        NTILE(4) OVER (ORDER BY LastPurchaseDate ASC) AS R_Score,
+        NTILE(4) OVER (ORDER BY Frequency ASC) AS F_Score,
+        NTILE(4) OVER (ORDER BY Monetary ASC) AS M_Score
+    FROM base_metrics
+)
+-- 3. Customer Segmentation based on combined scores
+SELECT 
+    CustomerID,
+    RecencyDays,
+    Frequency,
+    Monetary,
+    R_Score,
+    F_Score,
+    M_Score,
+    CASE 
+        WHEN R_Score = 4 AND F_Score >= 3 AND M_Score >= 3 THEN 'Champions / VIP'
+        WHEN R_Score >= 3 AND F_Score >= 2 THEN 'Loyal Customers'
+        WHEN R_Score <= 2 AND F_Score >= 3 THEN 'At Risk (High Value Churning)'
+        ELSE 'Needs Attention / Inactive'
+    END AS CustomerSegment
+FROM rfm_scores
+ORDER BY Monetary DESC;
